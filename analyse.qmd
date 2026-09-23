@@ -1,0 +1,844 @@
+---
+title: "Überlebenszeitanalyse bei Kolonkarzinom"
+subtitle: "Ein reproduzierbares Lern- und Portfolio-Projekt mit R"
+lang: de
+format:
+  html:
+    toc: true
+    number-sections: true
+    code-fold: true
+    code-summary: "R-Code anzeigen"
+    embed-resources: true
+execute:
+  echo: true
+---
+
+# Fragestellung und Analyseumfang
+
+Wie unterscheiden sich die Überlebenszeiten zwischen den Behandlungsgruppen **Levamisol** und **Levamisol + 5-Fluorouracil**?
+
+Diese explorative Sekundäranalyse verwendet den Datensatz `colon` aus dem R-Paket `survival`. Sie baut auf Übungen zur medizinischen Biometrie und zur Survival Analysis auf.
+
+Die Beobachtungsgruppe wird für diesen vorab festgelegten Vergleich der beiden aktiven Behandlungen nicht berücksichtigt. Unsere Ergebnisse beziehen sich daher auf diese beiden Gruppen.
+
+# Endpunkt und Zielgröße
+
+Als Endpunkt wählen wir **Tod** (`etype = 2`). Wir treffen keine Aussage über eine spezifische Todesursache.
+
+Für jede Behandlungsgruppe $g$ interessiert uns die Überlebensfunktion
+
+$$
+S_g(t) = P(T > t \mid G = g),
+$$
+
+wobei $T$ die Zeit bis zum Tod und $G$ die Behandlungsgruppe bezeichnet.
+
+Die Variable `time` enthält die beobachtete Zeit in Tagen bis zum
+Tod oder zur Zensierung. Der genaue klinische Zeitursprung konnte
+anhand der geprüften Quellen nicht abschließend geklärt werden.
+Wir verwenden die im Datensatz bereitgestellte Zeitskala.
+
+## Warum dieser Endpunkt?
+
+Die Frage nach der Überlebenszeit passt zu unserem ersten Analyseziel.
+
+Eine Analyse der Rückfallwahrscheinlichkeit wäre eine andere Fragestellung: Tod vor einem Rückfall kann ein konkurrierendes Ereignis darstellen. Dieser Fall wird im Survival-Analysis-Skript in Kapitel 7 behandelt.
+
+Die Wahl des Endpunkts erfolgt aufgrund der Forschungsfrage, nicht aufgrund eines günstigen Testergebnisses.
+
+# Beobachtungsmodell und Annahmen
+
+## Verteilungsannahmen und Beobachtungsmodell
+
+Der Kaplan-Meier-Schätzer benötigt keine bestimmte parametrische Verteilung der Lebenszeiten, etwa eine Normal-, Exponential- oder Weibullverteilung. Ein Test auf Normalverteilung ist deshalb für seine Anwendung nicht erforderlich.
+
+Die technischen Datenprüfungen bestätigen, dass die benötigten Variablen vollständig sind, die beobachteten Zeiten nichtnegativ sind und jede Person genau einmal in die Analyse eingeht.
+
+Diese Prüfungen weisen jedoch weder die Unabhängigkeit verschiedener Personen noch die Unabhängigkeit von Lebenszeit und Zensierungszeit innerhalb der Behandlungsgruppen nach.
+
+Insbesondere müssen die Gründe für das Ende der Nachbeobachtung anhand der Studieninformationen beurteilt werden. Bis diese Prüfung erfolgt ist, interpretieren wir die Kaplan-Meier-Ergebnisse unter der ausdrücklich genannten Annahme unabhängiger Zensierung. 
+
+$$
+X = \min(T,C),
+\qquad
+\delta = \mathbf{1}_{\{T \leq C\}},
+$$
+
+mit der Lebenszeit $T$ und der potenziellen Zensierungszeit $C$.
+
+-   `status = 1`: Der Tod wurde beobachtet.
+-   `status = 0`: Die Beobachtung ist rechtszensiert. Wir wissen, dass die Person bis zu diesem Zeitpunkt überlebt hat.
+
+Für die gewöhnliche Kaplan-Meier-Auswertung setzen wir innerhalb der Behandlungsgruppen unabhängige Zensierung voraus:
+
+$$
+T \perp C \mid G.
+$$
+
+Außerdem behandeln wir die Beobachtungen verschiedener Personen als unabhängig.
+
+## Stand der Begründung
+
+Die Unabhängigkeit der Zensierung ist eine **Modellannahme**. Sie wird weder durch die Wahl des Endpunkts noch durch die folgenden Datenprüfungen nachgewiesen.
+
+Wir müssen anhand der Studieninformationen prüfen, warum Nachbeobachtungen endeten und ob prognoseabhängige Ausfälle plausibel sind.
+
+Falls die Annahme unplausibel ist, benötigen wir zusätzliche Informationen, geeignete Verfahren oder Sensitivitätsanalysen. Ein gewöhnliches Cox-Modell behebt abhängige Zensierung nicht automatisch.
+
+# Daten laden und prüfen
+
+```{r}
+#| label: daten-laden
+
+library(survival)
+
+# Direkter Zugriff auf den Datensatz aus dem Paket
+daten_roh <- survival::colon
+
+knitr::kable(
+  data.frame(
+    Merkmal = c("Zeilen", "Spalten", "Unterschiedliche Personen"),
+    Anzahl = c(
+      nrow(daten_roh),
+      ncol(daten_roh),
+      length(unique(daten_roh$id))
+    )
+  ),
+  caption = "Umfang des ursprünglichen Datensatzes"
+)
+```
+
+## Ereignistypen
+
+Der ursprüngliche Datensatz enthält zwei Zeilen je Person: eine für Rückfall und eine für Tod. Diese Zeilen dürfen nicht als zwei unabhängige Personen in eine gewöhnliche Kaplan-Meier-Analyse eingehen.
+
+```{r}
+#| label: ereignistypen
+
+ereignistabelle <- with(
+  daten_roh,
+  table(
+    Ereignis = factor(
+      etype,
+      levels = c(1, 2),
+      labels = c("Rückfall", "Tod")
+    ),
+    Status = factor(
+      status,
+      levels = c(0, 1),
+      labels = c("Zensiert", "Ereignis beobachtet")
+    )
+  )
+)
+
+knitr::kable(
+  as.data.frame.matrix(ereignistabelle),
+  row.names = TRUE,
+  caption = "Beobachtungsstatus getrennt nach Endpunkt"
+)
+```
+
+## Auswahl der Analysepopulation
+
+Zuerst wählen wir den Endpunkt Tod. Anschließend wählen wir die beiden aktiven Behandlungen.
+
+```{r}
+#| label: analysepopulation
+
+daten_tod <- subset(daten_roh, etype == 2)
+
+analyse <- subset(
+  daten_tod,
+  rx %in% c("Lev", "Lev+5FU")
+)
+
+# Nicht mehr verwendete Faktorstufen entfernen
+analyse$rx <- droplevels(analyse$rx)
+
+# Levamisol als Referenzgruppe festlegen
+analyse$rx <- relevel(analyse$rx, ref = "Lev")
+
+knitr::kable(
+  data.frame(
+    Auswahl = c(
+      "Alle Personen mit Endpunkt Tod",
+      "Beobachtungsgruppe: nicht im gewählten Vergleich",
+      "Aktive Behandlungen: Analysepopulation"
+    ),
+    Anzahl = c(
+      nrow(daten_tod),
+      sum(daten_tod$rx == "Obs"),
+      nrow(analyse)
+    )
+  ),
+  caption = "Nachvollziehbare Auswahl der Analysepopulation"
+)
+```
+
+## Technische Plausibilitätsprüfungen
+
+Wir prüfen, ob die für die erste Analyse benötigten Variablen vollständig und plausibel kodiert sind.
+
+Ein erfolgreicher Check bestätigt die geprüfte Dateneigenschaft. Er bestätigt nicht automatisch die statistischen Modellannahmen.
+
+```{r}
+#| label: datenpruefung
+
+pruefungen <- data.frame(
+  Pruefung = c(
+    "Keine fehlenden Werte in ID, Gruppe, Zeit und Status",
+    "Genau eine Zeile je Person",
+    "Nur Endpunkt Tod enthalten",
+    "Zeiten sind endlich und nicht negativ",
+    "Status enthält ausschließlich 0 oder 1",
+    "Beide vorgesehenen Behandlungsgruppen vorhanden"
+  ),
+  Bestanden = c(
+    !anyNA(analyse[, c("id", "rx", "time", "status")]),
+    anyDuplicated(analyse$id) == 0,
+    all(analyse$etype == 2),
+    all(is.finite(analyse$time) & analyse$time >= 0),
+    all(analyse$status %in% c(0, 1)),
+    setequal(as.character(unique(analyse$rx)), c("Lev", "Lev+5FU"))
+  )
+)
+
+knitr::kable(
+  pruefungen,
+  caption = "Prüfung der grundlegenden Datenstruktur"
+)
+
+# Bei fehlgeschlagenen Prüfungen keine weitere Analyse durchführen
+stopifnot(all(pruefungen$Bestanden))
+```
+
+## Ereignisse und Zensierungen je Gruppe
+
+```{r}
+#| label: gruppenuebersicht
+
+gruppenuebersicht <- do.call(
+  rbind,
+  lapply(levels(analyse$rx), function(gruppe) {
+    d <- analyse[analyse$rx == gruppe, ]
+
+    data.frame(
+      Behandlung = gruppe,
+      Personen = nrow(d),
+      Todesfaelle = sum(d$status == 1),
+      Zensiert = sum(d$status == 0)
+    )
+  })
+)
+
+rownames(gruppenuebersicht) <- NULL
+
+knitr::kable(
+  gruppenuebersicht,
+  caption = "Beobachtete Todesfälle und Zensierungen"
+)
+```
+
+Diese Häufigkeiten beschreiben die verfügbaren Daten. Der Anteil beobachteter Todesfälle ist bei unterschiedlich langen Beobachtungszeiten kein Ersatz für eine Überlebenswahrscheinlichkeit zu einem festen Zeitpunkt.
+
+## Bekannte Einschränkung der Daten
+
+Die Paketdokumentation nennt eine Inkonsistenz zwischen `nodes` und `node4`. Diese Variablen werden in unserer ersten Analyse nicht verwendet. Vor einer späteren Erweiterung des Modells muss ihr Umgang begründet werden.
+
+# Kaplan-Meier-Schätzung
+
+Der Kaplan-Meier-Schätzer ist ein nichtparametrisches Verfahren zur Schätzung der Überlebensfunktion $S(t)=P(T>t)$. Er beschreibt, mit welcher Wahrscheinlichkeit eine Person über einen Zeitpunkt $t$ hinaus überlebt, und berücksichtigt rechtszensierte Beobachtungen.
+
+Wir verwenden ihn, weil unsere Daten sowohl beobachtete Todesfälle als auch rechtszensierte Beobachtungen enthalten. Er ermöglicht einen ersten Vergleich der Überlebensverläufe beider Gruppen, ohne eine bestimmte Verteilung der Lebenszeiten, beispielsweise eine Exponentialverteilung, vorauszusetzen.
+
+Die Interpretation setzt insbesondere unabhängige Zensierung innerhalb der Behandlungsgruppen voraus. Eine Annahme proportionaler Hazards ist für diese Schätzung nicht erforderlich.
+
+## Methodik
+
+Wir schätzen die Überlebensfunktion für jede Behandlungsgruppe getrennt mit dem Kaplan-Meier-Schätzer:
+
+$$
+\widehat S_g(t)
+=
+\prod_{t_{gj}\leq t}
+\left(1-\frac{d_{gj}}{Y_{gj}}\right).
+$$
+
+Dabei bezeichnet:
+
+-   $t_{gj}$ einen beobachteten Todeszeitpunkt in Gruppe $g$,
+-   $d_{gj}$ die Anzahl der Todesfälle zu diesem Zeitpunkt,
+-   $Y_{gj}$ die Anzahl der Personen unmittelbar davor unter Risiko.
+
+Eine Person zählt zum Risikosatz, solange sie noch nicht verstorben oder zuvor zensiert wurde. Zensierte Personen tragen damit bis zu ihrem Ausscheiden Informationen bei.
+
+Die Auswertung setzt die zuvor beschriebenen Modellannahmen voraus. Proportionale Hazards werden für die Kaplan-Meier-Schätzung nicht benötigt.
+
+## Schätzung und Unsicherheit
+
+Wir berechnen punktweise 95%-Konfidenzintervalle auf Grundlage der Greenwood-Varianz und einer Log-Log-Transformation. Die Rücktransformation hält die Grenzen im Bereich von 0 bis 1.
+
+Diese Intervalle beschreiben die Unsicherheit an einem jeweils festen Zeitpunkt. Sie sind kein simultanes 95%-Konfidenzband für die gesamte Kurve.
+
+```{r}
+#| label: km-schaetzung
+
+km <- survfit(
+  Surv(time, status == 1) ~ rx,
+  data = analyse,
+  stype = 1,
+  conf.int = 0.95,
+  conf.type = "log-log"
+)
+```
+
+## Überlebenskurven
+
+```{r}
+#| label: fig-kaplan-meier
+#| fig-width: 8
+#| fig-height: 5.5
+#| fig-cap: "Kaplan-Meier-Kurven mit punktweisen 95%-Konfidenzintervallen. Kleine Striche markieren Zensierungszeitpunkte."
+
+farben <- c("#0072B2", "#D55E00")
+
+plot(
+  km,
+  col = farben,
+  lty = 1,
+  lwd = 2,
+  conf.int = TRUE,
+  mark.time = TRUE,
+  xlab = "Beobachtete Zeit (Tage)",
+  ylab = "Geschätzte Überlebenswahrscheinlichkeit",
+  ylim = c(0, 1),
+  xaxs = "i",
+  yaxs = "i"
+)
+
+legend(
+  "topright",
+  legend = c("Levamisol", "Levamisol + 5-FU"),
+  col = farben,
+  lty = 1,
+  lwd = 2,
+  bty = "n",
+  cex = 0.85
+)
+```
+
+## Anzahl der Personen unter Risiko
+
+Die folgenden Zahlen zeigen, wie viele Personen zu ausgewählten Zeitpunkten noch leben und weiter beobachtet werden. Ein kleiner Risikosatz begrenzt die Aussagekraft später Kurvenabschnitte.
+
+```{r}
+#| label: km-risikosatz
+
+zeitpunkte <- c(0, 365, 1095, 1825)
+
+risikotabelle <- data.frame(
+  Behandlung = c("Levamisol", "Levamisol + 5-FU")
+)
+
+for (t in zeitpunkte) {
+  risikotabelle[[paste0("Tag ", t)]] <- vapply(
+    levels(analyse$rx),
+    function(g) {
+      sum(analyse$rx == g & analyse$time >= t)
+    },
+    numeric(1)
+  )
+}
+
+knitr::kable(
+  risikotabelle,
+  caption = "Personen unter Risiko unmittelbar vor dem jeweiligen Zeitpunkt"
+)
+```
+
+## Überlebenswahrscheinlichkeiten an festen Zeitpunkten
+
+Für eine übersichtliche Beschreibung berichten wir die Schätzungen nach 365, 1095 und 1825 Tagen, also ungefähr nach einem, drei und fünf Jahren. Diese Zeitpunkte dienen der deskriptiven Darstellung; wir führen hier keine separaten Signifikanztests durch.
+
+```{r}
+#| label: km-zeitpunkte
+
+km_zeiten <- summary(
+  km,
+  times = c(365, 1095, 1825),
+  extend = FALSE
+)
+
+km_tabelle <- data.frame(
+  Behandlung = sub(
+    "^rx=", "", as.character(km_zeiten$strata)
+  ),
+  Tage = km_zeiten$time,
+  Unter_Risiko = km_zeiten$n.risk,
+  Ueberleben_Prozent = 100 * km_zeiten$surv,
+  KI_unten_Prozent = 100 * km_zeiten$lower,
+  KI_oben_Prozent = 100 * km_zeiten$upper
+)
+
+knitr::kable(
+  km_tabelle,
+  digits = 1,
+  col.names = c(
+    "Behandlung", "Tage", "Unter Risiko",
+    "Überleben (%)", "95%-KI unten (%)", "95%-KI oben (%)"
+  ),
+  caption = "Kaplan-Meier-Schätzungen mit punktweisen 95%-Konfidenzintervallen"
+)
+```
+
+## Interpretation der Ergebnisse
+
+### Wie ist die Grafik zu lesen?
+
+Die durchgezogenen Linien zeigen die geschätzten Überlebenswahrscheinlichkeiten. Abwärtsbewegungen entstehen an beobachteten Todeszeitpunkten. Zensierungen sind durch kleine Striche markiert; sie verursachen selbst keinen Sprung der Kurve, verkleinern aber den Risikosatz für spätere Zeitpunkte.
+
+Die gestrichelten Linien zeigen die Grenzen der punktweisen 95%-Konfidenzintervalle. Diese beschreiben die statistische Unsicherheit der Schätzung am jeweiligen Zeitpunkt.
+
+### Vergleich der Behandlungsgruppen
+
+Zu Beginn verlaufen die beiden Kurven ähnlich. Im weiteren Beobachtungsverlauf liegt die geschätzte Überlebenskurve für Levamisol + 5-FU überwiegend oberhalb der Kurve für Levamisol.
+
+Nach 365 Tagen betragen die geschätzten Überlebenswahrscheinlichkeiten 90,6 % unter Levamisol und 91,8 % unter Levamisol + 5-FU. Die Differenz beträgt damit ungefähr 1,2 Prozentpunkte.
+
+Nach 1095 Tagen liegen die Schätzungen bei 62,9 % beziehungsweise 74,3 %. Die Differenz beträgt ungefähr 11,4 Prozentpunkte.
+
+Nach 1825 Tagen werden 53,5 % unter Levamisol und 63,4 % unter Levamisol + 5-FU geschätzt. Das entspricht einer Differenz von ungefähr 9,9 Prozentpunkten zugunsten der Kombinationsgruppe. Die Differenzen wurden hier aus den gerundeten Tabellenwerten berechnet und sind deskriptive Punktschätzungen.
+
+### Unsicherheit und verfügbare Beobachtungen
+
+Nach 1825 Tagen beträgt das punktweise 95%-Konfidenzintervall 47,8–58,9 % für Levamisol und 57,7–68,5 % für Levamisol + 5-FU.
+
+Diese Intervalle beziehen sich jeweils auf die Überlebenswahrscheinlichkeit einer Gruppe. Sie sind keine Konfidenzintervalle für den Unterschied zwischen den Gruppen. Ihre Überlappung allein entscheidet nicht über die statistische Signifikanz eines Unterschieds.
+
+Unmittelbar vor Tag 1825 stehen noch 164 Personen in der Levamisolgruppe und 187 Personen in der Kombinationsgruppe unter Risiko. Diese Personen sind zu diesem Zeitpunkt noch nicht verstorben oder zuvor zensiert worden.
+
+Besonders späte Kurvenabschnitte beruhen auf weniger Personen. Ein einzelner Todesfall kann dort einen größeren Sprung verursachen. Ein flacher Kurvenabschnitt bedeutet lediglich, dass in diesem Abschnitt keine beobachteten Todesfälle die Schätzung verändern; er belegt keine Heilung.
+
+### Vorläufiges Fazit
+
+Die deskriptive Analyse zeigt nach drei und fünf Jahren höhere geschätzte Überlebenswahrscheinlichkeiten in der Gruppe Levamisol + 5-FU.
+Der folgende Log-Rank-Test und das Cox-Modell ergänzen den deskriptiven Vergleich durch einen statistischen Test und eine modellbasierte Effektgröße. Die Interpretation bleibt an die Annahmen zur Zensierung und die noch zu prüfenden Studieninformationen gebunden.
+
+## Grenzen der Interpretation
+
+-   Die Kurven beschreiben die geschätzten Überlebensverteilungen der beiden ausgewählten Gruppen unter den Modellannahmen.
+-   Ein Unterschied zwischen den Kurven allein belegt noch keinen kausalen Behandlungseffekt.
+-   Überlappende oder nicht überlappende Konfidenzintervalle ersetzen keinen geeigneten Test des Gruppenunterschieds.
+-   Abhängige Zensierung kann die Schätzungen verzerren.
+-   Die statistische Unsicherheit und die Anzahl unter Risiko müssen bei der Interpretation gemeinsam betrachtet werden.
+
+# Vergleich der Überlebenskurven: Log-Rank-Test
+
+## Was prüft der Test und warum verwenden wir ihn?
+
+Der Log-Rank-Test vergleicht die Überlebensverteilungen zweier Gruppen und berücksichtigt dabei rechtszensierte Beobachtungen.
+
+Unsere Nullhypothese lautet:
+
+$$
+H_0: S_{\mathrm{Lev}}(t)=S_{\mathrm{Lev+5FU}}(t)
+$$
+
+für alle Zeitpunkte im betrachteten Beobachtungszeitraum. Die Alternative ist, dass die Überlebensfunktionen nicht überall übereinstimmen.
+
+An jedem Todeszeitpunkt vergleicht der Test die beobachtete Anzahl von Todesfällen einer Gruppe mit der unter der Nullhypothese erwarteten Anzahl. Diese Erwartung ergibt sich aus den jeweiligen Risikosätzen.
+
+Wir verwenden den Test als Ergänzung zu den Kaplan-Meier-Kurven. Er liefert einen globalen Vergleich, aber keine Effektgröße.
+
+## Voraussetzungen und Grenzen
+
+Wir setzen unabhängige Personen und unabhängige Zensierung innerhalb der Behandlungsgruppen voraus. Die Gruppen dürfen unterschiedliche Zensierungsverteilungen haben.
+
+Proportionale Hazards sind für die Gültigkeit des Tests unter der Nullhypothese keine zusätzliche Voraussetzung. Bei sich kreuzenden Hazards kann der Test jedoch geringe Teststärke besitzen.
+
+Die Auswertung ist explorativ. Der p-Wert beschreibt nicht die Wahrscheinlichkeit, dass die Nullhypothese wahr ist.
+
+```{r}
+#| label: log-rank
+
+lr <- survdiff(
+  Surv(time, status == 1) ~ rx,
+  data = analyse,
+  rho = 0
+)
+
+lr_df <- length(lr$n) - 1
+lr_p <- pchisq(lr$chisq, df = lr_df, lower.tail = FALSE)
+
+knitr::kable(
+  data.frame(
+    Behandlung = sub("^rx=", "", names(lr$n)),
+    Beobachtete_Todesfaelle = as.numeric(lr$obs),
+    Unter_H0_erwartet = as.numeric(lr$exp)
+  ),
+  digits = 2,
+  caption = "Log-Rank-Test: beobachtete und erwartete Todesfälle"
+)
+
+knitr::kable(
+  data.frame(
+    Chi_Quadrat = lr$chisq,
+    Freiheitsgrade = lr_df,
+    p_Wert = format.pval(lr_p, digits = 3, eps = 0.0001)
+  ),
+  digits = 3,
+  caption = "Explorativer zweiseitiger Log-Rank-Test"
+)
+```
+
+Unter der Nullhypothese und den Modellannahmen folgt die Teststatistik näherungsweise einer Chi-Quadrat-Verteilung mit einem Freiheitsgrad.
+
+Die Richtung und Größe des beobachteten Gruppenunterschieds müssen zusätzlich anhand der Überlebenskurven und geeigneter Effektschätzer beurteilt werden.
+
+# Cox-Modell für die Behandlungsgruppe
+
+## Modell und Begründung
+
+Mit dem Cox-Modell untersuchen wir den Zusammenhang zwischen Behandlungsgruppe und Hazard, also der momentanen Sterberate unter den jeweils noch lebenden Personen.
+
+Wir verwenden das Modell
+
+$$
+\lambda(t\mid Z)=\lambda_0(t)\exp(\beta Z),
+$$
+
+wobei $Z=0$ für Levamisol und $Z=1$ für Levamisol + 5-FU steht.
+
+Die Baseline-Hazard $\lambda_0(t)$ bleibt unspezifiziert. Das Modell benötigt somit keine festgelegte parametrische Lebenszeitverteilung.
+
+Unter der Annahme proportionaler Hazards gilt:
+
+$$
+HR =
+\frac{\lambda(t\mid Z=1)}{\lambda(t\mid Z=0)}
+=\exp(\beta).
+$$
+
+Dieses Hazard Ratio ist im Modell über die Zeit konstant:
+
+-   $HR<1$: niedrigere Hazard in der Kombinationsgruppe.
+-   $HR=1$: gleiche Hazards.
+-   $HR>1$: höhere Hazard in der Kombinationsgruppe.
+
+Das Hazard Ratio ist weder ein Verhältnis der Lebenszeiten noch ein Verhältnis der Sterbewahrscheinlichkeiten bis zu einem festen Zeitpunkt.
+
+## Umfang und Voraussetzungen
+
+Wir passen zunächst ein unadjustiertes Modell an: Nur die Behandlung wird als Einflussgröße aufgenommen. Alter, Geschlecht und andere Merkmale werden nicht berücksichtigt.
+
+Neben unabhängigen Personen und unabhängiger Zensierung innerhalb der Gruppen setzt die Interpretation als konstantes Hazard Ratio proportionale Hazards voraus.
+
+Für zeitgleiche Ereignisse verwenden wir die Efron-Approximation.
+
+```{r}
+#| label: cox-modell
+
+cox_modell <- coxph(
+  Surv(time, status == 1) ~ rx,
+  data = analyse,
+  ties = "efron",
+  x = TRUE,
+  y = TRUE,
+  na.action = na.fail
+)
+
+hr <- unname(exp(coef(cox_modell))[1])
+hr_ki <- unname(exp(confint(cox_modell))[1, ])
+
+knitr::kable(
+  data.frame(
+    Vergleich = "Levamisol + 5-FU gegenüber Levamisol",
+    Hazard_Ratio = hr,
+    KI_95_unten = hr_ki[1],
+    KI_95_oben = hr_ki[2],
+    Personen = cox_modell$n,
+    Todesfaelle = cox_modell$nevent
+  ),
+  digits = 3,
+  caption = "Cox-Modell: Hazard Ratio und 95%-Wald-Konfidenzintervall"
+)
+```
+
+Log-Rank-Test und Cox-Modell verwenden dieselben Daten. Sie sind keine unabhängigen Bestätigungen des Ergebnisses: Der Test dient dem globalen Vergleich, das Modell der Schätzung einer modellabhängigen Effektgröße.
+
+# Prüfung der Proportional-Hazards-Annahme
+
+## Was wird geprüft?
+
+Das bisherige Cox-Modell nimmt einen zeitlich konstanten Behandlungskoeffizienten $\beta$ und damit ein konstantes Hazard Ratio an.
+
+Wir verwenden `cox.zph` mit der KM-Zeittransformation. Der Test untersucht eine zeitliche Veränderung des Behandlungskoeffizienten. Ergänzend betrachten wir eine Grafik auf Grundlage skalierter Schoenfeld-Residuen.
+
+Ein kleiner p-Wert spricht gegen die geprüfte Annahme. Ein großer p-Wert beweist sie nicht.
+
+```{r}
+#| label: ph-test
+
+ph <- cox.zph(
+  cox_modell,
+  transform = "km"
+)
+
+ph_tabelle <- as.data.frame(ph$table)
+ph_tabelle$Term <- rownames(ph_tabelle)
+ph_tabelle <- ph_tabelle[, c("Term", "chisq", "df", "p")]
+rownames(ph_tabelle) <- NULL
+
+ph_tabelle$p <- format.pval(
+  ph_tabelle$p,
+  digits = 3,
+  eps = 0.0001
+)
+
+knitr::kable(
+  ph_tabelle,
+  digits = 3,
+  col.names = c(
+    "Term", "Chi-Quadrat", "Freiheitsgrade", "p-Wert"
+  ),
+  caption = "Test der Proportional-Hazards-Annahme"
+)
+```
+
+Da das Modell nur einen Behandlungsterm enthält, liefern die Zeile `rx` und der globale Test hier dieselbe Prüfung.
+
+## Grafische Diagnostik
+
+```{r}
+#| label: fig-ph-diagnostik
+#| fig-width: 8
+#| fig-height: 5.5
+#| fig-cap: "Skalierte Schoenfeld-Residuen und geglätteter Verlauf des Behandlungskoeffizienten. Die blaue horizontale Linie markiert den konstanten Koeffizienten des angepassten Cox-Modells."
+
+plot(
+  ph,
+  var = 1,
+  resid = TRUE,
+  se = TRUE,
+  xlab = "Zeit (KM-transformierte Achse)",
+  ylab = "Behandlungskoeffizient auf Log-Hazard-Skala"
+)
+
+abline(
+  h = unname(coef(cox_modell)[1]),
+  col = "#0072B2",
+  lty = 2,
+  lwd = 2
+)
+```
+
+Unter proportionalen Hazards ist der wahre Koeffizient über die Zeit konstant. Wir beurteilen deshalb, ob der geglättete Verlauf unter Berücksichtigung seiner Unsicherheit mit einer horizontalen Linie vereinbar erscheint.
+
+Konstanz bedeutet nicht, dass der Koeffizient null sein muss: Auch ein konstanter Behandlungseffekt ungleich null erfüllt die Proportional-Hazards-Annahme.
+
+Bei deutlichen zeitlichen Veränderungen wäre ein einzelnes konstantes Hazard Ratio als Beschreibung unzureichend. Dann müssten wir beispielsweise einen zeitabhängigen Behandlungseffekt oder einen RMST-Vergleich untersuchen.
+
+Diese Diagnostik prüft nicht die Unabhängigkeit der Zensierung.
+
+# Zusammenfassende Ergebnisse und Modellbeurteilung
+
+## Vergleich der Überlebensverteilungen
+
+Die Analyse umfasst 614 Personen mit 284 beobachteten Todesfällen.
+
+Der Log-Rank-Test liefert eine Teststatistik von 8,207 bei einem Freiheitsgrad und einen p-Wert von 0,00417. Unter den Modellannahmen sprechen die Daten gegen die Nullhypothese gleicher Überlebensverteilungen.
+
+In der Levamisolgruppe wurden 161 Todesfälle beobachtet, gegenüber ungefähr 136,9 unter der Nullhypothese erwarteten Todesfällen. In der Kombinationsgruppe wurden 123 Todesfälle beobachtet, gegenüber ungefähr 147,1 erwarteten Todesfällen. Die Erwartungswerte berücksichtigen die Risikosätze an den Ereigniszeitpunkten.
+
+Die Richtung dieses Unterschieds stimmt mit den Kaplan-Meier-Kurven überein: Die Kombinationsgruppe weist insbesondere nach drei und fünf Jahren höhere geschätzte Überlebenswahrscheinlichkeiten auf.
+
+## Effektgröße im Cox-Modell
+
+Das unadjustierte Cox-Modell liefert für Levamisol + 5-FU gegenüber Levamisol ein Hazard Ratio von 0,711 (95%-Konfidenzintervall: 0,562–0,899).
+
+Unter der Annahme proportionaler Hazards entspricht dies einer ungefähr 28,9 % niedrigeren momentanen Sterberate unter den jeweils noch lebenden Personen der Kombinationsgruppe.
+
+Diese Aussage bedeutet weder 28,9 % längere Lebenszeit noch eine um 28,9 Prozentpunkte geringere Sterbewahrscheinlichkeit. Das Konfidenzintervall schließt den Wert 1 aus.
+
+## Beurteilung der Proportional-Hazards-Annahme
+
+Der Test mit `cox.zph` ergibt eine Teststatistik von 0,112 und einen p-Wert von 0,737. Damit liefert dieser Test keinen statistisch erkennbaren Hinweis gegen die Proportional-Hazards-Annahme.
+
+Die geglättete Kurve der Residuen zeigt einen gekrümmten Verlauf: Der geschätzte Koeffizient wird zunächst negativer und steigt später wieder an. Die Unsicherheit ist insbesondere am Rand des Beobachtungszeitraums groß. Die horizontale Referenzlinie liegt im dargestellten Unsicherheitsbereich.
+
+Die Grafik begründet daher keine eindeutige Abweichung von einem konstanten Koeffizienten, zeigt aber auch keine exakt konstante Wirkung. Der verwendete Test kann zudem nicht jede Form zeitlicher Veränderung zuverlässig erkennen.
+
+Für diese erste Analyse behalten wir das einfache Cox-Modell als Arbeitsmodell bei. Die Diagnostik beweist weder proportionale Hazards noch unabhängige Zensierung.
+
+## Gesamtbewertung und Grenzen
+
+Kaplan-Meier-Schätzung, Log-Rank-Test und Cox-Modell ergeben ein konsistentes deskriptives und modellbasiertes Bild zugunsten der Kombinationsgruppe. Sie beruhen jedoch auf denselben Daten und sind keine unabhängigen Bestätigungen.
+
+Die Analyse ist explorativ und das Cox-Modell unadjustiert. Die Interpretation setzt insbesondere unabhängige Zensierung innerhalb der Behandlungsgruppen voraus. 
+Der genaue Zeitursprung und die individuellen Zensierungsgründe
+konnten anhand der geprüften Quellen nicht abschließend geklärt
+werden. Dies bleibt eine Einschränkung dieser Sekundäranalyse.
+
+Die Ergebnisse beziehen sich auf diesen historischen Datensatz und den gewählten Vergleich. Sie begründen für sich genommen keine aktuelle individuelle Therapieentscheidung.
+
+# Antwort auf die Forschungsfrage
+
+Unsere Forschungsfrage lautet: Wie unterscheiden sich die Überlebenszeiten zwischen Levamisol und Levamisol + 5-Fluorouracil?
+
+In der untersuchten Population weisen die Ergebnisse auf ein günstigeres Gesamtüberleben in der Gruppe Levamisol + 5-Fluorouracil hin.
+
+Nach 1825 Tagen beträgt die geschätzte Überlebenswahrscheinlichkeit 63,4 % in der Kombinationsgruppe gegenüber 53,5 % unter Levamisol. Der geschätzte Unterschied beträgt damit ungefähr 9,9 Prozentpunkte. Dieser Vergleich beschreibt das Überleben zu einem festen Zeitpunkt; er bedeutet nicht, dass die Lebenszeit um 9,9 % länger ist.
+
+Der explorative Log-Rank-Test liefert Hinweise auf unterschiedliche Überlebensverteilungen (p = 0,00417). Das unadjustierte Cox-Modell schätzt ein Hazard Ratio von 0,711 (95%-Konfidenzintervall: 0,562–0,899). Unter der Annahme proportionaler Hazards entspricht dies einer etwa 28,9 % niedrigeren momentanen Sterberate in der Kombinationsgruppe, jeweils unter den noch lebenden Personen.
+
+Die Forschungsfrage wird damit unter den angegebenen Modellannahmen zugunsten der Kombinationsgruppe beantwortet. Die Verfahren beruhen auf denselben Daten und liefern keine unabhängigen Bestätigungen. 
+
+## Was bedeuten die Ergebnisse praktisch?
+
+Die Analyse spricht für ein günstigeres Gesamtüberleben in der Gruppe mit Levamisol + 5-Fluorouracil.
+
+Am anschaulichsten ist der Vergleich nach ungefähr fünf Jahren: Die geschätzte Überlebenswahrscheinlichkeit beträgt 63,4 % unter der Kombination und 53,5 % unter Levamisol allein. Anschaulich entspricht dies ungefähr 63 gegenüber 54 Überlebenden je 100 Personen in den jeweiligen Gruppen. Diese Zahlen sind Kaplan-Meier-Schätzungen, die unterschiedlich lange Nachbeobachtungszeiten und Rechtszensierung berücksichtigen.
+
+Der Unterschied beträgt ungefähr 9,9 Prozentpunkte. Er beschreibt einen geschätzten Unterschied zwischen den Gruppen; daraus folgt für sich genommen noch nicht, dass die Kombination ursächlich zehn zusätzliche Leben je 100 behandelte Personen rettet.
+
+## Wie gelangen wir zu dieser Interpretation?
+
+Die drei Verfahren beantworten unterschiedliche Teilfragen:
+
+-   **Kaplan-Meier-Schätzung:** Wie hoch ist die Überlebenswahrscheinlichkeit im Zeitverlauf? Die geschätzte Kurve der Kombinationsgruppe liegt im weiteren Verlauf überwiegend höher. Nach drei und fünf Jahren sind ihre geschätzten Überlebenswahrscheinlichkeiten größer.
+
+-   **Log-Rank-Test:** Wie gut sind die beobachteten Unterschiede mit gleichen Überlebensverteilungen vereinbar? Der p-Wert von 0,00417 bedeutet: Wenn die Überlebensverteilungen tatsächlich gleich wären und die Testannahmen gelten, träte eine mindestens so extreme Teststatistik bei ungefähr 0,42 % entsprechender Wiederholungen auf. Das spricht gegen gleiche Überlebensverteilungen. Der p-Wert sagt jedoch weder, wie groß der Unterschied ist, noch wie wahrscheinlich die Wirksamkeit einer Behandlung ist.
+
+-   **Cox-Modell:** Wie unterscheiden sich die momentanen Sterberaten? Das Hazard Ratio von 0,711 bedeutet, dass die geschätzte momentane Sterberate in der Kombinationsgruppe das 0,711-Fache der Rate unter Levamisol beträgt. Verglichen werden zu jedem Zeitpunkt die jeweils noch lebenden Personen beider Gruppen. Die relative Verringerung ergibt sich aus (1 − 0,711) × 100 = 28,9 %. Diese Interpretation als zeitlich konstantes Verhältnis setzt proportionale Hazards voraus.
+
+## Wie sicher ist diese Aussage?
+
+Das 95%-Konfidenzintervall des Hazard Ratios reicht von 0,562 bis 0,899. Es beschreibt die statistische Unsicherheit der Schätzung unter den Modellannahmen. Der Wert 1, der für gleiche Hazards steht, liegt außerhalb dieses Intervalls.
+
+Eine um 28,9 % niedrigere Hazard bedeutet weder eine um 28,9 % längere Lebenszeit noch 28,9 % weniger Todesfälle bis zum Ende der Beobachtung. Für die praktische Einordnung berichten wir deshalb zusätzlich die Überlebenswahrscheinlichkeiten nach fünf Jahren.
+
+Die Ergebnisse sprechen unter den genannten Annahmen für die Kombinationsgruppe. Wie belastbar diese Schlussfolgerung ist, hängt insbesondere von den Nachbeobachtungsbedingungen und der Unabhängigkeit der Zensierung ab. Die statistischen Ergebnisse allein beantworten außerdem keine Fragen zu Nebenwirkungen, Lebensqualität oder Kosten. 
+
+## Was bleibt ungeklärt?
+
+Die Unabhängigkeit der Zensierung innerhalb der Behandlungsgruppen wurde nicht nachgewiesen. Bei prognoseabhängigen Ausfällen könnten die Schätzungen und der Gruppenvergleich verzerrt sein.
+
+Die Prüfung der Proportional-Hazards-Annahme liefert keinen statistischen Hinweis gegen diese Annahme (p = 0,737), beweist sie jedoch nicht.
+
+Der genaue Zeitursprung und die individuellen Zensierungsgründe
+konnten anhand der geprüften Quellen nicht abschließend geklärt
+werden. Unsere Schlussfolgerung bleibt an die genannten
+Modellannahmen gebunden. Einzelheiten dokumentiert der Abschnitt
+„Studienkontext und Grenzen der Quellenprüfung“.
+
+# Quellen und Herkunft der Analyse
+
+## Lehrveranstaltungsunterlagen
+
+**Ditzhaus, Marc (o. J.).** *Survival Analysis.* Vorlesungsskript und Organisationsfolien, Otto-von-Guericke-Universität Magdeburg. Nicht öffentlich verlinkte Lehrveranstaltungsunterlagen.
+
+Verwendet wurden insbesondere:
+
+-   Definition 2.6: Rechtszensierungsmodell;
+-   Definition 3.2: Kaplan-Meier- und Nelson-Aalen-Schätzer;
+-   Kapitel 4: Vergleich von Überlebensverteilungen;
+-   Kapitel 5: Regressionsmodelle;
+-   Kapitel 7: konkurrierende Risiken.
+
+Die separat vorliegenden Übungsblätter stammen aus dem Sommersemester 2022. Für die hier verwendeten Skriptteile ist das Ausgabejahr nicht eindeutig ausgewiesen.
+
+**Glimm, Ekkehard (2025).** *Übungen zur Biometrie für Statistiker.* Aufgaben und Lösungen, August 2025. Ergänzende Vorlesungsunterlagen zur medizinischen Biometrie.
+
+Die Aufgaben 12 und 13 bilden den Ausgangspunkt für den Behandlungsvergleich mit dem Datensatz `colon`.
+
+**Abweichung zwischen Aufgabenstellung und Begleitcode:** Aufgabe 12 filtert `etype == 1` (Rückfall), während die bereitgestellte R-Datei `etype == 2` (Tod) verwendet. In dieser Analyse wird entsprechend der formulierten Forschungsfrage ausdrücklich Tod als Endpunkt gewählt.
+
+## Datensatz und Variablendokumentation
+### Studienkontext und Grenzen der Quellenprüfung
+
+Der Abschlussbericht von Moertel et al. (1995) beschreibt eine
+randomisierte kontrollierte Studie mit 929 geeigneten Personen
+nach operativer Entfernung eines Kolonkarzinoms im Stadium III.
+Verglichen wurden Beobachtung, Levamisol und Levamisol plus
+Fluorouracil. Berichtet wird eine mediane Nachbeobachtung von
+6,5 Jahren. Diese Angabe stammt aus der Originalpublikation
+und wurde hier nicht aus den Daten berechnet.
+
+Unsere Analyse beschränkt sich auf die beiden aktiven
+Behandlungsgruppen mit insgesamt 614 Personen.
+
+Geprüft wurden die Paketdokumentation und der über PubMed
+zugängliche Abstract des Abschlussberichts. Eine vollständige
+Prüfung der Originalpublikation war nicht möglich.
+
+Die Paketdokumentation definiert `time` als Tage bis zum
+Ereignis oder zur Zensierung. Der genaue klinische Zeitursprung
+und die individuellen Gründe für das Ende der Nachbeobachtung
+konnten anhand dieser Quellen nicht abschließend geklärt werden.
+Die Zeitangaben werden deshalb auf der im Datensatz
+bereitgestellten Zeitskala interpretiert.
+
+Die Randomisierung der Behandlung belegt keine unabhängige
+Zensierung. Diese bleibt eine ausdrücklich benannte Annahme
+unserer Auswertung.
+
+Quellen:
+[Moertel et al. (1995), Abstract](https://pubmed.ncbi.nlm.nih.gov/7847642/)
+und
+[Dokumentation des Datensatzes](https://stat.ethz.ch/R-manual/R-devel/library/survival/html/colon.html).
+
+**R-Paket survival.** *colon: Chemotherapy for Stage B/C colon cancer.*
+
+Die Analyse verwendet die im Paket bereitgestellte Datenfassung. Die Dokumentation erläutert die Variablen, die zwei Zeilen je Person und die Kodierung der Ereignistypen. Sie weist außerdem auf die Inkonsistenz zwischen `nodes` und `node4` hin.
+
+[Datensatzdokumentation](https://stat.ethz.ch/R-manual/R-devel/library/survival/html/colon.html)
+
+Die tatsächlich verwendete Paketversion wird im Abschnitt „Softwareumgebung“ dokumentiert. Die online verfügbare Dokumentation kann sich auf eine neuere Version beziehen.
+
+## Publikationen zur zugrunde liegenden Studie
+
+**Moertel, C. G., et al. (1990).** Levamisole and fluorouracil for adjuvant therapy of resected colon carcinoma. *The New England Journal of Medicine*, 322(6), 352–358.
+
+[Publikationsnachweis](https://pubmed.ncbi.nlm.nih.gov/2300087/)
+
+**Moertel, C. G., et al. (1995).** Fluorouracil plus levamisole as effective adjuvant therapy after resection of stage III colon carcinoma: a final report. *Annals of Internal Medicine*, 122(5), 321–326.
+
+[Publikationsnachweis](https://pubmed.ncbi.nlm.nih.gov/7847642/)
+
+Die Studienpublikationen liefern den Hintergrund dieser Analyse.
+Anhand der geprüften Quellen konnten wir den genauen Beginn der
+Zeitmessung und die individuellen Gründe für Zensierungen nicht
+abschließend klären. Diese Einschränkungen sind bei der
+Interpretation der Überlebenswahrscheinlichkeiten und des
+Behandlungsvergleichs zu berücksichtigen.
+
+## Dokumentation der verwendeten R-Funktionen
+
+Die folgenden Dokumentationen dienen zur Nachvollziehbarkeit der Implementierung und ihrer Einstellungen:
+
+-   [`survfit.formula`: Überlebenskurven und Konfidenzintervalle](https://stat.ethz.ch/R-manual/R-devel/library/survival/html/survfit.formula.html)
+-   [`summary.survfit`: Schätzungen zu ausgewählten Zeitpunkten](https://stat.ethz.ch/R-manual/R-devel/library/survival/html/summary.survfit.html)
+-   [`survdiff`: Log-Rank-Test mit rho = 0](https://stat.ethz.ch/R-manual/R-devel/library/survival/html/survdiff.html)
+-   [`coxph`: Cox-Regressionsmodell](https://stat.ethz.ch/R-manual/R-devel/library/survival/html/coxph.html)
+-   [`cox.zph`: Prüfung der Proportional-Hazards-Annahme](https://stat.ethz.ch/R-manual/R-devel/library/survival/html/cox.zph.html)
+
+## Software zitieren
+
+Die Literaturangaben für die verwendeten Versionen werden direkt aus R erzeugt:
+
+```{r}
+#| label: software-zitation
+#| echo: false
+
+print(citation())
+print(citation("survival"))
+```
+
+# Softwareumgebung
+
+```{r}
+#| label: softwareumgebung
+#| echo: false
+
+sessionInfo()
+```
