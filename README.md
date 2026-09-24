@@ -2,7 +2,7 @@
 
 **An exploratory, reproducible R/Quarto analysis of overall survival in two colon-cancer treatment groups.** It compares Levamisole with Levamisole plus 5-Fluorouracil (5-FU), using Kaplan–Meier estimation, the log-rank test, and an unadjusted Cox model.
 
-> **Read the analysis:** [Open the full Quarto report](LINK_TO_RENDERED_REPORT)
+> **Read the analysis:** [Open the full Quarto report](https://github.com/ModelLearnRepeat/colon-survival-analysis/blob/main/analyse.qmd)
 
 ## Research question
 
