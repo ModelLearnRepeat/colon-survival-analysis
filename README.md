@@ -17,7 +17,7 @@ The analysis includes **614 participants** in the two active-treatment groups an
 | Levamisole | 53.5% (95% CI: 47.8–58.9%) |
 | Levamisole + 5-FU | 63.4% (95% CI: 57.7–68.5%) |
 
-The estimated difference is **9.9 percentage points** in favour of the combination group. The global log-rank test gives *p* = 0.00417. The unadjusted Cox model estimates a hazard ratio of **0.711** (95% CI: 0.562–0.899) for Levamisole + 5-FU relative to Levamisole. Under the proportional-hazards assumption, this corresponds to an estimated 28.9% lower instantaneous death hazard among participants still alive at a given time. The proportional-hazards test found no evidence against that assumption (*p* = 0.737); this does not prove the assumption holds.
+The estimated difference is **9.9 percentage points** in favour of the combination group ( who took Levamisole plus 5-FU) . The global log-rank test gives *p* = 0.00417. The unadjusted Cox model estimates a hazard ratio of **0.711** (95% CI: 0.562–0.899) for Levamisole + 5-FU relative to Levamisole. Under the proportional-hazards assumption, this corresponds to an estimated 28.9% lower instantaneous death hazard among participants still alive at a given time. The proportional-hazards test found no evidence against that assumption (*p* = 0.737); this does not prove the assumption holds.
 
 These are exploratory comparisons from the same data, not independent replications and not, by themselves, proof of a causal treatment effect.
 
